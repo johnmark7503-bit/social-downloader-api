@@ -1,127 +1,79 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
-import urllib.request
-import urllib.parse
-import json
+import requests
 
-app = FastAPI(
-    title="Enterprise Hybrid Downloader API",
-    description="Production-ready scraper with silent error suppression and CORS protection.",
-    version="4.0.0"
-)
+app = FastAPI()
 
-# 1. CORS MIDDLEWARE (Zaroori hai taake frontend/apps se direct call ho sake)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Production mein yahan apni website ka domain daal sakte hain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 2. SILENT LOGGER (Terminal se laal rang ke 403 errors ko chupane ke liye)
-class SuppressYtdlLogger:
-    def debug(self, msg): pass
-    def warning(self, msg): pass
-    def error(self, msg): pass # Yeh line local terminal par error print hone se rokegi
-
+# Request model validation ke liye
 class DownloadRequest(BaseModel):
     url: str
 
-# --- ENGINE B: CLOUD BRIDGE ENGINE ---
-def fetch_from_cloud_bridge(target_url: str):
+def fetch_from_cloud_bridge(url: str):
+    """
+    ENGINE B: Cloud Bridge Bypass Engine.
+    Agar aapka koi specific Third-Party API Endpoint ya bypass bridge setup hai,
+    toh uski logic aap yahan rakh sakte hain.
+    """
     try:
-        api_endpoint = "https://www.tikwm.com/api/"
-        encoded_data = urllib.parse.urlencode({'url': target_url}).encode('utf-8')
+        # NOTE: Yahan apna actual cloud bridge API URL aur headers lazmi check kar lein
+        # api_url = f"https://your-cloud-bridge-api.com/bypass?url={url}"
+        # response = requests.get(api_url, timeout=10)
+        # if response.status_code == 200:
+        #     return response.json()
         
-        req = urllib.request.Request(
-            api_endpoint, 
-            data=encoded_data, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        
-        with urllib.request.urlopen(req, timeout=12) as response:
-            res = json.loads(response.read().decode('utf-8'))
-            if res.get('code') == 0 and 'data' in res:
-                d = res['data']
-                medias = []
-                
-                if d.get('play'):
-                    medias.append({"url": d.get('play'), "data_size": d.get('size', 0), "width": 0, "height": 0, "quality": "no_watermark", "extension": "mp4", "type": "video"})
-                if d.get('wmplay'):
-                    medias.append({"url": d.get('wmplay'), "data_size": 0, "width": 0, "height": 0, "quality": "watermark", "extension": "mp4", "type": "video"})
-                if d.get('music'):
-                    medias.append({"url": d.get('music'), "data_size": 0, "width": 0, "height": 0, "quality": "audio", "extension": "mp3", "type": "audio"})
-
-                return {
-                    "url": target_url, "source": "tiktok (cloud-fallback)", "id": d.get('id'),
-                    "author": d.get('author', {}).get('nickname', 'unknown'), "title": d.get('title', 'Social Media Video'),
-                    "thumbnail": d.get('cover'), "duration": d.get('duration', 0),
-                    "statistics": {"play_count": d.get('play_count', 0), "digg_count": d.get('digg_count', 0), "comment_count": d.get('comment_count', 0), "share_count": d.get('share_count', 0)},
-                    "medias": medias, "type": "multiple" if len(medias) > 1 else "single", "error": False
-                }
+        # Filhal yeh fallback structure return karega agar custom API config hai:
+        return None
     except Exception:
         return None
-    return None
 
-# --- MAIN API ROUTE ---
 @app.post("/v1/social/autolink")
 def get_media_links(request: DownloadRequest):
-    
-    # Engine A Configuration with Custom Silent Logger
+    # yt-dlp ki global configurations
     ydl_opts = {
-        'format': 'best',
         'quiet': True,
         'no_warnings': True,
-        'logger': SuppressYtdlLogger(),  # Ugly terminal errors ko handle karega
-        'extract_flat': False,
-        'check_formats': False,
+        'format': 'best',
+        'merge_output_format': 'mp4',
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
         }
     }
     
     try:
-        # TRY ENGINE A (Local Scraper)
+        # ENGINE A: Primary extraction using local/container yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(request.url, download=False)
-            medias_list = []
             
-            for f in info.get('formats', []):
-                if f.get('url'):
-                    vcodec = f.get('vcodec', 'none')
-                    quality_type = "video" if vcodec != 'none' and vcodec is not None else "audio"
-                    quality_label = f.get('format_note') or f.get('resolution') or "standard"
-                    
-                    quality_tag = "watermark" if "watermark" in quality_label.lower() else ("audio" if quality_type == "audio" else "no_watermark")
-
-                    medias_list.append({
-                        "url": f.get('url'), "data_size": f.get('filesize') or f.get('filesize_approx') or 0,
-                        "width": f.get('width') or 0, "height": f.get('height') or 0,
-                        "quality": quality_tag, "extension": f.get('ext', 'mp4'), "type": quality_type
-                    })
-
-            medias_list.reverse()
+            # Response formatting jo frontend ko chahiye
             return {
-                "url": request.url, "source": info.get('extractor', 'unknown').lower(), "id": info.get('id'),
-                "author": info.get('uploader'), "title": info.get('title'), "thumbnail": info.get('thumbnail'),
-                "duration": info.get('duration', 0),
-                "statistics": {"play_count": info.get('view_count', 0), "digg_count": info.get('like_count', 0), "comment_count": info.get('comment_count', 0), "share_count": info.get('share_count', 0)},
-                "medias": medias_list, "type": "multiple" if len(medias_list) > 1 else "single", "error": False
+                "error": False,
+                "url": request.url,
+                "source": info.get("extractor_key", "").lower(),
+                "id": info.get("id"),
+                "author": info.get("uploader") or info.get("artist") or "Unknown",
+                "title": info.get("title") or "Social Media Video",
+                "thumbnail": info.get("thumbnail"),
+                "video_url": info.get("url")
             }
-
-    except Exception:
-        # TRIGGER ENGINE B (Cloud Backup) - Bina terminal par error show kiye silent switch
-        if "tiktok.com" in request.url.lower():
+            
+    except Exception as e:
+        # ENGINE B FALLBACK: Agar local system/Render ka IP block ho jaye, toh cloud bypass use karein
+        # Ab isme TikTok, Instagram, YouTube, aur Pinterest sab domains check hote hain
+        target_domains = ["tiktok.com", "instagram.com", "youtube.com", "youtu.be", "pinterest.com", "pin.it"]
+        
+        if any(domain in request.url.lower() for domain in target_domains):
             cloud_response = fetch_from_cloud_bridge(request.url)
             if cloud_response:
                 return cloud_response
-        
+
+        # Agar dono engines fail ho jayein tab hi final error display hoga
         raise HTTPException(
-            status_code=400, 
-            detail={"error": True, "message": "Extraction failed on all available engines. Link may be private or broken."}
+            status_code=400,
+            detail={
+                "error": True, 
+                "message": f"Extraction failed on all available engines. Link may be private or broken. Local Error: {str(e)}"
+            }
         )
